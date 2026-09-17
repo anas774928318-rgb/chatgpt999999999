@@ -17,13 +17,26 @@ public class NetworkAdapterService
     private const string NetworkAddressValueName = "NetworkAddress";
     private const string OriginalMacBackupValueName = "MacChanger_OriginalMac";
 
-    /// <summary>يرجع كل محولات الواي فاي (Wireless80211) المتوفرة على الجهاز.</summary>
+    // أسماء/أوصاف نمطية لمحولات وهمية لا يجب عرضها أبدًا حتى لو مرت من فلتر WMI
+    private static readonly string[] VirtualNameHints =
+    {
+        "virtual", "direct virtual", "hosted network", "kernel debug",
+        "loopback", "miniport", "tap-", "vpn", "wan miniport",
+        "الاتصال المحلي", "مصحح الأخطاء" // الأسماء العربية المقابلة التي ظهرت فعليًا
+    };
+
+    /// <summary>يرجع محولات الواي فاي الفيزيائية الحقيقية فقط (يستبعد المحولات الافتراضية/الوهمية).</summary>
     public List<NetworkAdapterInfo> GetWifiAdapters()
     {
         var result = new List<NetworkAdapterInfo>();
 
+        // نجلب أولًا من WMI مجموعة GUID للمحولات الفيزيائية الحقيقية فقط (PhysicalAdapter = True)
+        var physicalGuids = GetPhysicalAdapterGuids();
+
         var interfaces = NetworkInterface.GetAllNetworkInterfaces()
-            .Where(n => n.NetworkInterfaceType == NetworkInterfaceType.Wireless80211);
+            .Where(n => n.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
+            .Where(n => physicalGuids.Contains(n.Id))
+            .Where(n => !IsVirtualByName(n.Name) && !IsVirtualByName(n.Description));
 
         foreach (var nic in interfaces)
         {
@@ -45,6 +58,34 @@ public class NetworkAdapterService
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// يستعلم WMI عن كل المحولات الفيزيائية الحقيقية (PhysicalAdapter = True) ويرجع مجموعة GUID خاصتها.
+    /// هذا يستبعد تلقائيًا محولات Wi-Fi Direct الافتراضية، محولات Hosted Network، ومحولات مصحح أخطاء Kernel.
+    /// </summary>
+    private HashSet<string> GetPhysicalAdapterGuids()
+    {
+        var guids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        using var searcher = new ManagementObjectSearcher(
+            "SELECT GUID, PhysicalAdapter FROM Win32_NetworkAdapter WHERE PhysicalAdapter = True");
+
+        foreach (ManagementObject mo in searcher.Get())
+        {
+            var guid = mo["GUID"] as string;
+            if (!string.IsNullOrWhiteSpace(guid))
+                guids.Add(guid);
+            mo.Dispose();
+        }
+
+        return guids;
+    }
+
+    private static bool IsVirtualByName(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        return VirtualNameHints.Any(hint => text.Contains(hint, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>يبحث عن المفتاح الفرعي (0000, 0001, ...) الذي يطابق NetCfgInstanceId مع معرّف الواجهة.</summary>
